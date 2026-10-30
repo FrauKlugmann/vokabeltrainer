@@ -13,6 +13,9 @@ body{margin:0}
 header{background:#12365b;color:white;padding:25px max(20px,calc((100vw - 960px)/2))}
 h1{margin:0 0 5px;font-size:29px}
 header p{margin:0}
+header{display:flex;align-items:center;gap:18px}
+.logo{width:64px;height:64px;border-radius:15px;flex-shrink:0;box-shadow:0 2px 8px #0003}
+@media(max-width:560px){.logo{width:48px;height:48px;border-radius:11px}h1{font-size:24px}}
 main{max-width:960px;margin:22px auto;padding:0 16px}
 nav{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:18px}
 button{cursor:pointer;border:0;border-radius:10px;padding:12px 17px;font-weight:650;background:#e3eaf3;color:#153557;font:inherit;font-weight:650}
@@ -39,7 +42,7 @@ footer{max-width:960px;margin:35px auto;padding:0 16px 20px;text-align:right;col
 </style>
 </head>
 <body>
-<header><h1>Englisch-Vokabeltrainer</h1><p>Klasse 7 · Emil-Petri-Schule Arnstadt</p></header>
+<header><img class="logo" src="apple-touch-icon.png" alt=""><div><h1>Englisch-Vokabeltrainer</h1><p>Klasse 7 · Emil-Petri-Schule Arnstadt</p></div></header>
 <main><nav id="nav"></nav><div id="app"></div></main>
 <footer>Erstellt von Marion Klugmann (Oktober 2026) mit freundlicher Unterstützung von ChatGPT und Claude.</footer>
 <script>
