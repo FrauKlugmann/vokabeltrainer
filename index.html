@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Englisch-Vokabeltrainer · Klasse 7</title>
+<style>
+:root{font-family:system-ui,Arial;color:#172b46;background:#f3f6fa}
+body{margin:0}
+header{background:#12365b;color:white;padding:25px max(20px,calc((100vw - 960px)/2))}
+h1{margin:0 0 5px;font-size:29px}
+header p{margin:0}
+main{max-width:960px;margin:22px auto;padding:0 16px}
+nav{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:18px}
+button{cursor:pointer;border:0;border-radius:10px;padding:12px 17px;font-weight:650;background:#e3eaf3;color:#153557;font:inherit;font-weight:650}
+button.active,button.primary{background:#1764ac;color:white}
+button:disabled{opacity:.5;cursor:not-allowed}
+button.wrong{background:#f6dede;color:#a42b2b}
+button.right{background:#d9f0e2;color:#126b38;opacity:1}
+.panel{background:white;border-radius:16px;padding:24px;box-shadow:0 2px 14px #1c3b5a12;margin-bottom:16px}
+h2{margin-top:0}
+input,select{padding:12px;border:1px solid #aab9ca;border-radius:9px;font:inherit;max-width:100%;box-sizing:border-box}
+input{width:100%}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.muted{color:#5a6879}
+.feedback{font-weight:650;margin:14px 0;min-height:25px}
+.good{color:#126b38}
+.bad{color:#a42b2b}
+.choices{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0}
+.choices button{text-align:left;min-height:56px}
+.word{font-size:29px;font-weight:750;margin:15px 0}
+.small{font-size:13px}
+.wronglist{margin:10px 0 18px;padding-left:20px}
+footer{max-width:960px;margin:35px auto;padding:0 16px 20px;text-align:right;color:#667487;font-size:12px}
+@media(max-width:560px){.grid,.choices{grid-template-columns:1fr}.panel{padding:17px}}
+</style>
+</head>
+<body>
+<header><h1>Englisch-Vokabeltrainer</h1><p>Klasse 7 · Emil-Petri-Schule Arnstadt</p></header>
+<main><nav id="nav"></nav><div id="app"></div></main>
+<footer>Erstellt von Marion Klugmann (Oktober 2026) mit freundlicher Unterstützung von ChatGPT und Claude.</footer>
+<script>
+/* ---------- Grunddaten ---------- */
+const KEY = 'vocab7_adaptive_v1';
+const SEED = [
+  ['vendor', 'Verkäufer / Verkäuferin'],
+  ['vending machine', 'Verkaufsautomat'],
+  ['draw', 'zeichnen'],
+  ['lawyer', 'Anwalt / Anwältin'],
+  ['primary school teacher', 'Grundschullehrer / Grundschullehrerin']
+];
+// Wiederholungsabstände in Tagen je Stufe (Stufe 1 = 14 Tage, Stufe 2 = 21 Tage, ... ab Stufe 5 immer 90 Tage)
+const INTERVALS = [0, 14, 21, 30, 60, 90];
+const FALLBACK = ['Schulgebäude', 'Bleistift', 'Schreibtisch', 'Spielplatz', 'Fahrrad'];
+const TYPES = ['association', 'hearing', 'writing'];
+const TYPE_LABEL = { association: 'Zuordnen', hearing: 'Hören', writing: 'Schreiben' };
+
+const newWord = (en, de) => ({ en, de, stage: 0, streak: 0, due: 0, attempts: 0 });
+
+let state = null;
+try { state = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
+if (!state || !Array.isArray(state.words)) state = { words: SEED.map(([en, de]) => newWord(en, de)) };
+
+/* ---------- Trainingszustand ---------- */
+let tab = 'lernen';
+let roundWords = [];     // Wörter der aktuellen Runde (jedes genau einmal pro Trainingsart)
+let session = [];        // gemischte Reihenfolge für die aktuelle Trainingsart
+let index = 0;
+let trainingType = 'association';
+let reviewMode = false;  // true = Runde „Fehler ausbügeln“
+let mistakes = new Set();
+let locked = false, errors = 0, firstTry = true, correctChoice = -1;
+
+/* ---------- Hilfsfunktionen ---------- */
+const $ = id => document.getElementById(id);
+let storageWarned = false;
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(state)); return true; }
+  catch (e) {
+    if (!storageWarned) {
+      storageWarned = true;
+      const bar = document.createElement('div');
+      bar.style.cssText = 'background:#fff4d6;color:#7a5200;padding:12px 16px;border-radius:10px;margin-bottom:14px;font-weight:600';
+      bar.textContent = '⚠ Dieser Browser speichert den Lernstand gerade nicht dauerhaft (z. B. in einer Vorschau oder im privaten Fenster). Bis zum Neuladen funktioniert alles, danach ist der Fortschritt weg. Öffne die Datei direkt im Browser, damit gespeichert wird.';
+      document.querySelector('main').prepend(bar);
+    }
+    return false;
+  }
+}
+const escapeHTML = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const normalize = s => String(s).trim().toLocaleLowerCase('en-GB').replace(/[’‘`´]/g, "'").replace(/\s+/g, ' ');
+function today() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
+function days(n) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n); return d.getTime(); }
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; }
+  return arr;
+}
+function speak(t) {
+  if (!('speechSynthesis' in window)) { alert('Dieser Browser unterstützt keine Sprachausgabe.'); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(t);
+  u.lang = 'en-GB'; u.rate = .82;
+  const voices = speechSynthesis.getVoices();
+  const v = voices.find(x => x.lang.toLowerCase() === 'en-gb') || voices.find(x => x.lang.toLowerCase().startsWith('en'));
+  if (v) u.voice = v;
+  speechSynthesis.speak(u);
+}
+const current = () => state.words.find(w => w.en === session[index]);
+const isDue = w => w.stage > 0 && w.due <= today();
+
+/* ---------- Navigation ---------- */
+function setTab(t) { tab = t; render(); }
+function render() {
+  const names = [['lernen', 'Trainieren'], ['eingeben', 'Vokabeln eingeben'], ['bestand', 'Mein Wortschatz']];
+  $('nav').innerHTML = names.map(([id, label]) => `<button class="${tab === id ? 'active' : ''}" onclick="setTab('${id}')">${label}</button>`).join('');
+  if (tab === 'lernen') home();
+  if (tab === 'eingeben') entry();
+  if (tab === 'bestand') inventory();
+}
+
+function home() {
+  const fresh = state.words.filter(w => w.stage === 0).length;
+  const due = state.words.filter(isDue).length;
+  $('app').innerHTML = `<section class="panel"><h2>Vokabeltraining</h2>
+    <p>Neue Vokabeln: <b>${fresh}</b> · Fällige Wiederholungen: <b>${due}</b></p>
+    <div class="grid">
+      <button class="primary" onclick="start('next')">Vokabeln für die nächste Stunde</button>
+      <button class="primary" onclick="start('due')">Fällige Vokabeln aus dem Wortschatz</button>
+      <button onclick="start('all')">Alle Vokabeln trainieren</button>
+      <button onclick="resetProgress()">↺ Lernstand zurücksetzen</button>
+    </div>
+    <p class="small muted">Jede Vokabel kommt pro Trainingsart (Zuordnen, Hören, Schreiben) genau einmal. Fehler werden am Ende gesammelt geübt.</p></section>`;
+}
+
+function resetProgress() {
+  if (!confirm('Lernstand wirklich zurücksetzen? Alle Vokabeln bleiben erhalten, gelten danach aber wieder als neu.')) return;
+  state.words.forEach(w => { w.stage = 0; w.streak = 0; w.due = 0; w.attempts = 0; });
+  save();
+  session = []; roundWords = []; reviewMode = false; mistakes = new Set(); index = 0;
+  render();
+}
+
+/* ---------- Training ---------- */
+function start(mode) {
+  const pool = state.words.filter(w => mode === 'next' ? w.stage === 0 : mode === 'due' ? isDue(w) : true);
+  if (!pool.length) {
+    const msg = mode === 'next' ? 'Es gibt gerade keine neuen Vokabeln. Trage neue Wörter ein oder wiederhole fällige Vokabeln.'
+      : mode === 'due' ? 'Heute ist keine Vokabel zur Wiederholung fällig. Super!'
+      : 'Es sind noch keine Vokabeln vorhanden.';
+    $('app').innerHTML = `<section class="panel"><h2>Nichts zu tun</h2><p>${msg}</p><button onclick="setTab('lernen')">Zur Übersicht</button></section>`;
+    return;
+  }
+  reviewMode = false;
+  mistakes = new Set();
+  beginRound(pool.map(w => w.en));
+}
+
+function beginRound(words) {
+  roundWords = [...words];
+  trainingType = TYPES[0];
+  session = shuffle([...roundWords]);
+  index = 0;
+  showQuestion();
+}
+
+function showQuestion() {
+  if (index >= session.length) {
+    const next = TYPES.indexOf(trainingType) + 1;
+    if (next < TYPES.length) { trainingType = TYPES[next]; session = shuffle([...roundWords]); index = 0; }
+    else { finishTraining(); return; }
+  }
+  const w = current();
+  if (!w) { index++; showQuestion(); return; } // Wort wurde inzwischen entfernt
+  firstTry = true; locked = false; errors = 0;
+  if (trainingType === 'writing') { writeQuestion(); return; }
+
+  const others = shuffle([...new Set(state.words.map(x => x.de).filter(d => normalize(d) !== normalize(w.de)))]);
+  const choices = [w.de, ...others.slice(0, 3)];
+  for (const f of FALLBACK) {
+    if (choices.length >= 4) break;
+    if (!choices.some(c => normalize(c) === normalize(f))) choices.push(f);
+  }
+  shuffle(choices);
+  correctChoice = choices.indexOf(w.de);
+  const association = trainingType === 'association';
+
+  $('app').innerHTML = `<section class="panel">
+    <p class="muted">${reviewMode ? 'Fehler ausbügeln · ' : ''}Wort ${index + 1} von ${session.length} · ${TYPE_LABEL[trainingType]}</p>
+    <h2>${association ? 'Welche deutsche Bedeutung passt?' : 'Höre genau hin!'}</h2>
+    ${association
+      ? `<p class="word">${escapeHTML(w.en)}</p><button onclick="speak(current().en)">🔊 Aussprache anhören</button>`
+      : `<button class="primary" onclick="speak(current().en)">🔊 Englisches Wort anhören</button>`}
+    <p>Wähle die richtige deutsche Bedeutung.</p>
+    <div class="choices">${choices.map((c, i) => `<button class="answer-choice" onclick="answerMeaning(${i}, this)">${escapeHTML(c)}</button>`).join('')}</div>
+    <div id="feedback" class="feedback" aria-live="polite"></div><div id="next"></div></section>`;
+  if (!association) speak(w.en);
+}
+
+function answerMeaning(i, btn) {
+  if (locked) return;
+  const w = current();
+  if (i === correctChoice) {
+    locked = true;
+    $('feedback').innerHTML = '<span class="good">Richtig zugeordnet!</span>';
+    document.querySelectorAll('.answer-choice').forEach(b => b.disabled = true);
+    btn.classList.add('right');
+    showNextButton();
+  } else {
+    mistakes.add(w.en);
+    btn.disabled = true;
+    btn.classList.add('wrong');
+    $('feedback').innerHTML = '<span class="bad">Noch nicht richtig. Versuche es erneut.</span>';
+    if (trainingType === 'hearing') speak(w.en);
+  }
+}
+
+function writeQuestion() {
+  const w = current();
+  $('app').innerHTML = `<section class="panel">
+    <p class="muted">${reviewMode ? 'Fehler ausbügeln · ' : ''}Wort ${index + 1} von ${session.length} · Schreiben</p>
+    <h2>Schreibe die englische Vokabel</h2>
+    <p class="word">${escapeHTML(w.de)}</p>
+    <button onclick="speak(current().en)">🔊 Anhören</button>
+    <p><input id="written" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Englisches Wort eingeben" aria-label="Englische Vokabel"></p>
+    <button class="primary" type="button" id="checkButton" onclick="checkWriting()">Überprüfen</button>
+    <div id="feedback" class="feedback" aria-live="polite"></div><div id="next"></div></section>`;
+  $('written').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); checkWriting(); } });
+  $('written').focus();
+}
+
+function checkWriting() {
+  if (locked) return;
+  const w = current();
+  const input = $('written').value;
+  if (!input.trim()) { $('written').focus(); return; }
+
+  if (normalize(input) !== normalize(w.en)) {
+    errors++;
+    if (firstTry) {
+      firstTry = false;
+      mistakes.add(w.en);
+      if (!reviewMode) {               // nur im regulären Training zählt der Fehler für den Lernstand
+        w.attempts++; w.streak = 0;
+        if (w.stage > 0) { w.stage = 0; w.due = 0; }
+        save();
+      }
+    }
+    $('feedback').innerHTML = errors >= 2
+      ? `<span class="bad">Noch nicht richtig. Richtige Schreibweise: <b>${escapeHTML(w.en)}</b> – schreibe das Wort jetzt einmal richtig ab.</span>`
+      : '<span class="bad">Noch nicht richtig. Versuche es erneut!</span>';
+    $('written').select();
+    return;
+  }
+
+  locked = true;
+  let extra = '';
+  if (firstTry && !reviewMode) {
+    w.attempts++;
+    if (w.stage === 0) {
+      w.streak++;
+      if (w.streak >= 2) {
+        w.stage = 1; w.due = days(INTERVALS[1]);
+        extra = `<p>Dieses Wort ist jetzt im langfristigen Wortschatz. Wiederholung in ${INTERVALS[1]} Tagen.</p>`;
+      } else {
+        extra = '<p class="muted">Noch einmal in einem weiteren Training auf Anhieb richtig – dann kommt es in den Wortschatz.</p>';
+      }
+    } else if (w.due <= today()) {      // nur fällige Wörter steigen eine Stufe auf
+      w.stage++;
+      const d = INTERVALS[Math.min(w.stage, INTERVALS.length - 1)];
+      w.due = days(d);
+      extra = `<p>Nächste Wiederholung in ${d} Tagen.</p>`;
+    }
+    save();
+  }
+  const msg = firstTry ? 'Richtig geschrieben! Auf Anhieb geschafft.' : (errors >= 2 ? 'Richtig abgeschrieben! Das Wort kommt beim Fehler-Ausbügeln noch einmal.' : 'Richtig geschrieben! Im zweiten Versuch geschafft.');
+  $('feedback').innerHTML = `<span class="good">${msg}</span>${extra}`;
+  $('written').disabled = true;
+  $('checkButton').disabled = true;
+  showNextButton();
+}
+
+function showNextButton() {
+  $('next').innerHTML = '<button class="primary" type="button" id="nextBtn" onclick="advance()">Weiter →</button>';
+  $('nextBtn').focus();
+}
+
+function advance() {
+  if (!locked) return;
+  index++;
+  showQuestion();
+}
+
+function finishTraining() {
+  const wrong = [...mistakes].filter(en => state.words.some(w => w.en === en));
+  const title = reviewMode ? 'Fehler-Runde beendet!' : 'Training beendet!';
+  const note = reviewMode ? 'Du hast die Übungsrunde für deine Fehler abgeschlossen.' : 'Du hast alle drei Trainingsarten abgeschlossen.';
+  let body;
+  if (wrong.length) {
+    body = `<p>${wrong.length} Vokabel(n) waren mindestens einmal nicht auf Anhieb richtig:</p>
+      <ul class="wronglist">${wrong.map(en => `<li>${escapeHTML(en)}</li>`).join('')}</ul>
+      <button class="primary" onclick="startReview()">Fehler ausbügeln</button> `;
+  } else {
+    body = '<p class="good">Alles auf Anhieb richtig – stark! 🎉</p>';
+  }
+  $('app').innerHTML = `<section class="panel"><h2>${title}</h2><p>${note}</p>${body}<button onclick="setTab('lernen')">Zur Übersicht</button></section>`;
+}
+
+function startReview() {
+  const wrong = [...mistakes].filter(en => state.words.some(w => w.en === en));
+  if (!wrong.length) return;
+  reviewMode = true;
+  mistakes = new Set();
+  beginRound(wrong);
+}
+
+/* ---------- Vokabeln eingeben ---------- */
+function entry() {
+  $('app').innerHTML = `<section class="panel"><h2>Neue Vokabeln eintragen</h2>
+    <p>Trage das englische Wort und die deutsche Bedeutung ein. Für die fünf vorgegebenen Wörter prüft der Trainer die Schreibweise automatisch. Für andere Wörter ist eine zuverlässige Prüfung nur mit einer von der Lehrkraft bereitgestellten Referenzliste möglich.</p>
+    <div class="grid">
+      <label>Englisch<input id="en" autocomplete="off" spellcheck="false" placeholder="z. B. vending machine"></label>
+      <label>Deutsch<input id="de" autocomplete="off" placeholder="z. B. Verkaufsautomat"></label>
+    </div><p><button class="primary" type="button" onclick="addWord()">Vokabel hinzufügen</button></p>
+    <div id="feedback" class="feedback" aria-live="polite"></div>
+    <p class="small muted">Tipp: Bei vorgegebenen Wörtern kannst du sie auch selbst eintippen und die Schreibweise überprüfen lassen.</p></section>`;
+  ['en', 'de'].forEach(id => $(id).addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); if (id === 'en' && !$('de').value.trim()) $('de').focus(); else addWord(); }
+  }));
+  $('en').focus();
+}
+
+function addWord() {
+  const en = $('en').value.trim(), de = $('de').value.trim();
+  if (!en || !de) { $('feedback').innerHTML = '<span class="bad">Bitte das englische Wort und die deutsche Bedeutung eintragen.</span>'; (en ? $('de') : $('en')).focus(); return; }
+  const match = SEED.find(x => normalize(x[0]) === normalize(en));
+  if (state.words.some(w => normalize(w.en) === normalize(en))) { $('feedback').innerHTML = '<span class="bad">Dieses Wort ist bereits vorhanden.</span>'; return; }
+  const slash = s => normalize(s).replace(/\s*\/\s*/g, '/');
+  const likely = SEED.find(x => slash(x[1]) === slash(de));
+  if (likely && !match) { $('feedback').innerHTML = '<span class="bad">Bitte prüfe die englische Schreibweise. Das gesuchte Wort ist noch nicht korrekt.</span>'; return; }
+  state.words.push(newWord(match ? match[0] : en, match ? match[1] : de));
+  save();
+  $('feedback').innerHTML = '<span class="good">Vokabel gespeichert!</span>';
+  $('en').value = ''; $('de').value = ''; $('en').focus();
+}
+
+/* ---------- Wortschatz ---------- */
+function statusText(w) {
+  if (w.stage === 0) return 'Neu · ' + Math.min(w.streak, 2) + '/2';
+  const date = new Date(w.due).toLocaleDateString('de-DE');
+  return 'Stufe ' + w.stage + ' · ' + (w.due <= today() ? '<b>heute fällig</b>' : 'fällig am ' + date);
+}
+
+function inventory() {
+  $('app').innerHTML = `<section class="panel"><h2>Mein Wortschatz</h2>
+    <p class="muted">Dein Lernstand wird lokal in diesem Browser gespeichert. Auf einem anderen Gerät ist er nicht automatisch verfügbar.</p>
+    <div style="overflow:auto"><table style="width:100%;border-collapse:collapse;text-align:left">
+      <thead><tr><th>Englisch</th><th>Deutsch</th><th>Status</th><th></th></tr></thead>
+      <tbody>${state.words.map((w, i) => `<tr style="border-top:1px solid #dfe5ed">
+        <td style="padding:12px 6px">${escapeHTML(w.en)} <button style="padding:5px" onclick="speak(state.words[${i}].en)" aria-label="Anhören">🔊</button></td>
+        <td>${escapeHTML(w.de)}</td><td>${statusText(w)}</td>
+        <td><button style="padding:7px" onclick="removeWord(${i})">Entfernen</button></td></tr>`).join('')}</tbody>
+    </table></div>
+    <p class="small muted">Wiederholungsrhythmus: Eine neue Vokabel kommt in den Wortschatz, wenn sie in zwei Trainings beim Schreiben auf Anhieb richtig war. Danach wird sie nach 14, 21, 30, 60 und dann immer nach 90 Tagen wiederholt. Ein Schreibfehler bei einer Wiederholung setzt sie auf „neu“ zurück.</p>
+    <p><button onclick="resetProgress()">↺ Lernstand zurücksetzen</button>
+      <button onclick="exportData()">Lernstand sichern (JSON)</button>
+      <button onclick="document.getElementById('import').click()">Lernstand importieren</button>
+      <input id="import" type="file" accept="application/json" style="display:none" onchange="importData(event)"></p></section>`;
+}
+
+function removeWord(i) {
+  if (confirm('Diese Vokabel wirklich entfernen?')) { state.words.splice(i, 1); save(); inventory(); }
+}
+
+function exportData() {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' }));
+  a.download = 'Vokabeltrainer_Lernstand.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+async function importData(e) {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const obj = JSON.parse(await file.text());
+    if (!Array.isArray(obj.words) || !obj.words.every(w => typeof w.en === 'string' && typeof w.de === 'string' && typeof w.stage === 'number')) throw Error();
+    obj.words.forEach(w => { w.streak = +w.streak || 0; w.due = +w.due || 0; w.attempts = +w.attempts || 0; });
+    if (confirm('Aktuellen Lernstand durch diese Datei ersetzen?')) { state = { words: obj.words }; save(); inventory(); }
+  } catch (err) { alert('Die Datei ist kein gültiger Lernstand.'); }
+}
+
+render();
+</script>
+</body>
+</html>
